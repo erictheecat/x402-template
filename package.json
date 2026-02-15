@@ -1,0 +1,54 @@
+{
+  "name": "x402-template",
+  "version": "1.0.0",
+  "description": "Fastify + TypeScript template for shipping x402-gated endpoints on Base",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "smoke": "tsx scripts/smoke.ts",
+    "verify:prod": "tsx scripts/verify-prod.ts"
+  },
+  "keywords": [
+    "x402",
+    "fastify",
+    "typescript",
+    "base",
+    "usdc"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@fastify/compress": "^8.3.1",
+    "@fastify/etag": "^6.1.0",
+    "@fastify/middie": "^9.1.0",
+    "@x402/core": "^2.3.1",
+    "@x402/evm": "^2.3.1",
+    "@x402/express": "^2.3.0",
+    "@x402/fetch": "^2.3.0",
+    "dotenv": "^17.3.1",
+    "fastify": "^5.7.4",
+    "lru-cache": "^11.2.6",
+    "pino": "^10.3.1",
+    "prom-client": "^15.1.3",
+    "undici": "^7.22.0",
+    "viem": "^2.45.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.2.3",
+    "eslint": "^9.39.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.55.0",
+    "vitest": "^4.0.18"
+  }
+}
