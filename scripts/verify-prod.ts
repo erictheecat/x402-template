@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 
-import { decodePaymentResponseHeader, wrapFetchWithPaymentFromConfig } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm";
-import { createPublicClient, http } from "viem";
+import { decodePaymentResponseHeader, wrapFetchWithPaymentFromConfig } from "@x402/fetch";
+import { formatEther, formatUnits, createPublicClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
 
@@ -16,17 +16,39 @@ const ERC20_BALANCE_OF_ABI = [
   },
 ] as const;
 
+const USDC_DECIMALS = 6;
+const USDC_TOLERANCE_UNITS = 2n;
+
 function parseArg(name: string): string | undefined {
   const arg = process.argv.find((item) => item.startsWith(`--${name}=`));
   if (!arg) return undefined;
   return arg.slice(name.length + 3);
 }
 
-function usdcToUnits(price: string): bigint {
-  const [wholeRaw, fractionRaw = ""] = price.split(".");
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`[MISSING_ENV] Missing required env var: ${name}`);
+  }
+  return value;
+}
+
+function usdcToUnits(value: string): bigint {
+  const [wholeRaw, fractionRaw = ""] = value.split(".");
   const whole = BigInt(wholeRaw || "0");
-  const fraction = BigInt(`${fractionRaw}000000`.slice(0, 6));
+  const fraction = BigInt(`${fractionRaw}000000`.slice(0, USDC_DECIMALS));
   return whole * 1_000_000n + fraction;
+}
+
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/$/, "");
+}
+
+function joinUrl(baseUrl: string, path: string): string {
+  if (!path.startsWith("/")) {
+    throw new Error(`[INVALID_ROUTE] Route path must start with '/': ${path}`);
+  }
+  return `${normalizeBaseUrl(baseUrl)}${path}`;
 }
 
 async function expectStatus(response: Response, expected: number, message: string): Promise<void> {
@@ -37,35 +59,38 @@ async function expectStatus(response: Response, expected: number, message: strin
 }
 
 async function main(): Promise<void> {
-  const baseUrl = parseArg("baseUrl") ?? process.env.VERIFY_BASE_URL ?? process.env.PUBLIC_BASE_URL;
+  const baseUrl = normalizeBaseUrl(
+    parseArg("baseUrl") ?? process.env.VERIFY_BASE_URL ?? process.env.PUBLIC_BASE_URL ?? "",
+  );
+
   if (!baseUrl) {
-    throw new Error("Missing base URL. Use --baseUrl=https://... or VERIFY_BASE_URL env var");
+    throw new Error("[MISSING_BASE_URL] Use --baseUrl=... or set VERIFY_BASE_URL/PUBLIC_BASE_URL");
   }
 
-  const buyerPrivateKey = process.env.BUYER_PRIVATE_KEY as `0x${string}` | undefined;
-  if (!buyerPrivateKey) {
-    throw new Error("Missing BUYER_PRIVATE_KEY env var for paid verification");
-  }
+  const paidRoute = parseArg("route") ?? process.env.VERIFY_ROUTE ?? "/v1/echo";
 
   const chainId = Number(process.env.CHAIN_ID ?? "8453");
   if (chainId !== 8453) {
-    throw new Error(`Expected CHAIN_ID=8453, got ${chainId}`);
+    throw new Error(`[CHAIN_ID_INVALID] Expected CHAIN_ID=8453, got ${chainId}`);
   }
 
-  const baseRpcUrl = process.env.BASE_RPC_URL;
-  const usdcContract = process.env.USDC_CONTRACT as `0x${string}` | undefined;
-  const receiverAddress = process.env.RECEIVER_ADDRESS as `0x${string}` | undefined;
-  const priceUsdc = process.env.PRICE_USDC;
+  const baseRpcUrl = requireEnv("BASE_RPC_URL");
+  const usdcContract = requireEnv("USDC_CONTRACT") as `0x${string}`;
+  const receiverAddress = requireEnv("RECEIVER_ADDRESS") as `0x${string}`;
+  const priceUsdc = requireEnv("PRICE_USDC");
+  const buyerPrivateKey = requireEnv("BUYER_PRIVATE_KEY") as `0x${string}`;
+  const sellerPrivateKey = process.env.SELLER_PRIVATE_KEY as `0x${string}` | undefined;
 
-  if (!baseRpcUrl || !usdcContract || !receiverAddress || !priceUsdc) {
-    throw new Error("Missing BASE_RPC_URL, USDC_CONTRACT, RECEIVER_ADDRESS, or PRICE_USDC env vars");
-  }
+  const expectedUnits = usdcToUnits(priceUsdc);
+
+  const buyerAccount = privateKeyToAccount(buyerPrivateKey);
+  const sellerAccount = sellerPrivateKey ? privateKeyToAccount(sellerPrivateKey) : undefined;
 
   const paidFetch = wrapFetchWithPaymentFromConfig(fetch, {
     schemes: [
       {
         network: `eip155:${chainId}`,
-        client: new ExactEvmScheme(privateKeyToAccount(buyerPrivateKey)),
+        client: new ExactEvmScheme(buyerAccount),
       },
     ],
   });
@@ -75,13 +100,42 @@ async function main(): Promise<void> {
     transport: http(baseRpcUrl),
   });
 
-  const healthz = await fetch(`${baseUrl}/healthz`);
+  const buyerEthBalance = await publicClient.getBalance({ address: buyerAccount.address });
+  if (buyerEthBalance <= 0n) {
+    throw new Error(
+      `[INSUFFICIENT_BUYER_ETH] Buyer wallet ${buyerAccount.address} has 0 ETH on Base; fund gas and retry`,
+    );
+  }
+
+  const buyerUsdcBalance = (await publicClient.readContract({
+    address: usdcContract,
+    abi: ERC20_BALANCE_OF_ABI,
+    functionName: "balanceOf",
+    args: [buyerAccount.address],
+  })) as bigint;
+
+  if (buyerUsdcBalance < expectedUnits) {
+    throw new Error(
+      `[INSUFFICIENT_BUYER_USDC] Buyer wallet ${buyerAccount.address} has ${formatUnits(buyerUsdcBalance, USDC_DECIMALS)} USDC, requires at least ${priceUsdc}`,
+    );
+  }
+
+  if (sellerAccount) {
+    const sellerEthBalance = await publicClient.getBalance({ address: sellerAccount.address });
+    if (sellerEthBalance <= 0n) {
+      throw new Error(
+        `[INSUFFICIENT_SELLER_ETH] Seller wallet ${sellerAccount.address} has 0 ETH on Base; settlement gas will fail`,
+      );
+    }
+  }
+
+  const healthz = await fetch(joinUrl(baseUrl, "/healthz"));
   await expectStatus(healthz, 200, "healthz failed");
 
-  const meta = await fetch(`${baseUrl}/meta`);
+  const meta = await fetch(joinUrl(baseUrl, "/meta"));
   await expectStatus(meta, 200, "meta failed");
 
-  const unpaid = await fetch(`${baseUrl}/v1/echo`, {
+  const unpaid = await fetch(joinUrl(baseUrl, paidRoute), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -89,17 +143,37 @@ async function main(): Promise<void> {
     },
     body: JSON.stringify({ probe: "unpaid-check" }),
   });
-  await expectStatus(unpaid, 402, "unpaid call should return 402");
 
-  const beforeBalance = await publicClient.readContract({
+  if (unpaid.status === 404 || unpaid.status === 405) {
+    const text = await unpaid.text();
+    throw new Error(
+      `[ROUTE_MISMATCH] ${paidRoute} returned ${unpaid.status}. Ensure x402 route mapping and verifier route match. Body: ${text}`,
+    );
+  }
+
+  if (unpaid.status === 200) {
+    throw new Error(
+      `[PAYMENT_GATE_DISABLED] Unpaid request succeeded on ${paidRoute}. Ensure x402 gate is enabled and bypass is off`,
+    );
+  }
+
+  await expectStatus(unpaid, 402, `Unpaid call to ${paidRoute} should return 402`);
+
+  const paymentRequiredHeader = unpaid.headers.get("payment-required");
+  if (!paymentRequiredHeader) {
+    throw new Error("[MISSING_PAYMENT_REQUIRED_HEADER] 402 response missing PAYMENT-REQUIRED header");
+  }
+
+  const receiverBalanceBefore = (await publicClient.readContract({
     address: usdcContract,
     abi: ERC20_BALANCE_OF_ABI,
     functionName: "balanceOf",
     args: [receiverAddress],
-  });
+  })) as bigint;
 
   const idempotencyKey = randomUUID();
-  const paidResponse = await paidFetch(`${baseUrl}/v1/echo`, {
+
+  const paidResponse = await paidFetch(joinUrl(baseUrl, paidRoute), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -107,38 +181,40 @@ async function main(): Promise<void> {
     },
     body: JSON.stringify({ probe: "paid-check", idempotencyKey }),
   });
-  await expectStatus(paidResponse, 200, "paid call should return 200");
+
+  await expectStatus(paidResponse, 200, "Paid call should return 200");
 
   const paidBody = (await paidResponse.json()) as {
     ok?: boolean;
     receipt?: Record<string, unknown>;
   };
+
   if (!paidBody.ok || !paidBody.receipt) {
-    throw new Error(`Paid response missing receipt object: ${JSON.stringify(paidBody)}`);
+    throw new Error(`[RECEIPT_MISSING] Paid response missing receipt object: ${JSON.stringify(paidBody)}`);
   }
 
   const paymentResponseHeader = paidResponse.headers.get("payment-response");
   if (!paymentResponseHeader) {
-    throw new Error("Missing PAYMENT-RESPONSE header on paid response");
+    throw new Error("[MISSING_PAYMENT_RESPONSE_HEADER] 200 response missing PAYMENT-RESPONSE header");
   }
+
   const settlement = decodePaymentResponseHeader(paymentResponseHeader);
 
-  const afterFirstBalance = await publicClient.readContract({
+  const receiverBalanceAfterFirst = (await publicClient.readContract({
     address: usdcContract,
     abi: ERC20_BALANCE_OF_ABI,
     functionName: "balanceOf",
     args: [receiverAddress],
-  });
+  })) as bigint;
 
-  const expectedIncrease = usdcToUnits(priceUsdc);
-  const actualIncrease = (afterFirstBalance as bigint) - (beforeBalance as bigint);
-  if (actualIncrease < expectedIncrease) {
+  const receiverIncrease = receiverBalanceAfterFirst - receiverBalanceBefore;
+  if (receiverIncrease + USDC_TOLERANCE_UNITS < expectedUnits) {
     throw new Error(
-      `Receiver balance did not increase as expected. Expected >= ${expectedIncrease}, actual ${actualIncrease}`,
+      `[RECEIVER_BALANCE_DELTA_LOW] Expected receiver delta >= ${expectedUnits} units, got ${receiverIncrease} units`,
     );
   }
 
-  const replayResponse = await paidFetch(`${baseUrl}/v1/echo`, {
+  const replayResponse = await paidFetch(joinUrl(baseUrl, paidRoute), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -148,31 +224,45 @@ async function main(): Promise<void> {
   });
 
   if (replayResponse.status !== 200 && replayResponse.status !== 409) {
-    const text = await replayResponse.text();
-    throw new Error(`Replay should return 200 or 409, got ${replayResponse.status}: ${text}`);
+    const replayText = await replayResponse.text();
+    throw new Error(
+      `[IDEMPOTENCY_UNEXPECTED_STATUS] Replay expected 200 or 409, got ${replayResponse.status}: ${replayText}`,
+    );
   }
 
-  const afterReplayBalance = await publicClient.readContract({
+  const receiverBalanceAfterReplay = (await publicClient.readContract({
     address: usdcContract,
     abi: ERC20_BALANCE_OF_ABI,
     functionName: "balanceOf",
     args: [receiverAddress],
-  });
+  })) as bigint;
 
-  const replayIncrease = (afterReplayBalance as bigint) - (afterFirstBalance as bigint);
-  if (replayIncrease > 1n) {
-    throw new Error(`Replay appears to have charged again. Additional increase: ${replayIncrease}`);
+  const replayIncrease = receiverBalanceAfterReplay - receiverBalanceAfterFirst;
+  if (replayIncrease > USDC_TOLERANCE_UNITS) {
+    throw new Error(
+      `[IDEMPOTENCY_DOUBLE_CHARGE] Replay increased receiver balance by ${replayIncrease} units`,
+    );
   }
+
+  const mode = baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1") ? "local-real" : "railway";
 
   console.log(
     JSON.stringify(
       {
         ok: true,
+        mode,
         baseUrl,
+        route: paidRoute,
         txHash: settlement.transaction,
         payer: settlement.payer,
-        receiverIncrease: actualIncrease.toString(),
+        buyer: buyerAccount.address,
+        buyerEth: formatEther(buyerEthBalance),
+        buyerUsdc: formatUnits(buyerUsdcBalance, USDC_DECIMALS),
+        receiver: receiverAddress,
+        receiverIncreaseUnits: receiverIncrease.toString(),
+        receiverIncreaseUsdc: formatUnits(receiverIncrease, USDC_DECIMALS),
         replayStatus: replayResponse.status,
+        replayIncreaseUnits: replayIncrease.toString(),
       },
       null,
       2,

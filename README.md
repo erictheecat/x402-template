@@ -146,10 +146,16 @@ curl -i "$PUBLIC_BASE_URL/v1/echo" \
   -d '{"hello":"world"}'
 ```
 
-Paid production call with x402 buyer flow:
+Real-money verification against local service:
 
 ```bash
-npm run verify:prod -- --baseUrl=https://your-service.up.railway.app
+npm run verify:local-real
+```
+
+Real-money verification against Railway:
+
+```bash
+VERIFY_BASE_URL=https://your-service.up.railway.app npm run verify:railway
 ```
 
 ## Production Verification Loop (real money)
@@ -170,6 +176,30 @@ Required env for verifier:
 - `RECEIVER_ADDRESS`
 - `PRICE_USDC`
 - `CHAIN_ID=8453`
+- `SELLER_PRIVATE_KEY` (recommended so verifier can fail early on seller gas issues)
+
+### Real-Money Modes
+
+1. `verify:local-real`:
+Run local server with bypass disabled and real keys, then run:
+```bash
+npm run verify:local-real
+```
+
+2. `verify:railway`:
+Use deployed URL:
+```bash
+VERIFY_BASE_URL=https://<your-service>.up.railway.app npm run verify:railway
+```
+
+### Funding Prerequisites
+
+- Buyer wallet must hold:
+- `PRICE_USDC` (or more) USDC
+- Some Base ETH for gas
+- Seller wallet (`SELLER_PRIVATE_KEY`) should hold some Base ETH for settlement gas
+
+The verifier exits with explicit errors like `INSUFFICIENT_BUYER_USDC`, `INSUFFICIENT_BUYER_ETH`, `INSUFFICIENT_SELLER_ETH`, `ROUTE_MISMATCH`, and `PAYMENT_GATE_DISABLED`.
 
 ## Railway Deploy Steps
 
@@ -180,7 +210,7 @@ Required env for verifier:
 5. Deploy.
 6. Run:
    ```bash
-   npm run verify:prod -- --baseUrl=https://<your-service>.up.railway.app
+   VERIFY_BASE_URL=https://<your-service>.up.railway.app npm run verify:railway
    ```
 
 ## Verification Checklist
