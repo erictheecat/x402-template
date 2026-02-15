@@ -55,7 +55,7 @@ describe("smoke", () => {
     const response = await fetch(`${baseUrl}/meta`);
     expect(response.status).toBe(200);
     const payload = (await response.json()) as { service?: string; chainId?: number };
-    expect(payload.service).toBe("x402-template-test");
+    expect(payload.service).toBe(process.env.SERVICE_NAME);
     expect(payload.chainId).toBe(8453);
   });
 });
