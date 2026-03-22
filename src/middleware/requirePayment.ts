@@ -3,7 +3,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { decodePaymentSignatureHeader } from "@x402/core/http";
 
 import { adaptExpressLikeRequest, adaptExpressLikeResponse, getHeader } from "../lib/expressCompat.js";
+import { DNS_ROUTE_PRICE_USDC } from "../lib/dnsLookup.js";
 import { errorPayload } from "../lib/errors.js";
+import { SENTIMENT_ROUTE_PRICE_USDC } from "../lib/sentiment.js";
 
 export const DEV_BYPASS_HEADER = "x-dev-bypass";
 const PAYMENT_CONTEXT = Symbol.for("x402.payment-context");
@@ -31,6 +33,18 @@ export interface RequirePaymentOptions {
   chainId: number;
   receiverAddress: string;
   amount: string;
+}
+
+function resolveDevBypassAmount(path: string, defaultAmount: string): string {
+  if (path === "/v1/dns") {
+    return DNS_ROUTE_PRICE_USDC;
+  }
+
+  if (path === "/v1/sentiment") {
+    return SENTIMENT_ROUTE_PRICE_USDC;
+  }
+
+  return defaultAmount;
 }
 
 function setPaymentContext(req: IncomingMessage, context: RawPaymentContext): void {
@@ -89,10 +103,11 @@ export function createRequirePaymentMiddleware(options: RequirePaymentOptions) {
 
     if (options.devBypassEnabled && options.nodeEnv !== "production") {
       if (getHeader(req, DEV_BYPASS_HEADER) === "true") {
+        const amount = resolveDevBypassAmount(path, options.amount);
         setPaymentContext(req, {
           paid: true,
           paidMode: "dev_bypass",
-          amount: options.amount,
+          amount,
           receiver: options.receiverAddress,
           chainId: options.chainId,
           idempotencyKey: idempotencyKey ?? undefined,

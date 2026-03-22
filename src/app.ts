@@ -71,6 +71,21 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     requestIdHeader: "x-request-id",
   });
 
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof AppError) {
+      sendError(reply, error.statusCode, error.code, error.message);
+      return;
+    }
+
+    if ((error as { code?: string }).code === "FST_ERR_VALIDATION") {
+      sendError(reply, 400, "INTERNAL_ERROR", "Invalid request payload");
+      return;
+    }
+
+    reply.log.error({ err: error }, "unhandled_error");
+    sendError(reply, 500, "INTERNAL_ERROR", "Internal server error");
+  });
+
   await app.register(compress, {
     encodings: ["br", "gzip"],
     threshold: 1024,
@@ -132,21 +147,6 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     if (reply.statusCode < 400 && request.requestContext.paid && request.requestContext.idempotencyKey) {
       idempotencyStore.markSeen(request.requestContext.idempotencyKey);
     }
-  });
-
-  app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof AppError) {
-      sendError(reply, error.statusCode, error.code, error.message);
-      return;
-    }
-
-    if ((error as { code?: string }).code === "FST_ERR_VALIDATION") {
-      sendError(reply, 400, "INTERNAL_ERROR", "Invalid request payload");
-      return;
-    }
-
-    reply.log.error({ err: error }, "unhandled_error");
-    sendError(reply, 500, "INTERNAL_ERROR", "Internal server error");
   });
 
   return app;

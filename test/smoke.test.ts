@@ -1,3 +1,4 @@
+import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -29,6 +30,8 @@ function setTestEnv(): void {
 describe("smoke", () => {
   let baseUrl = "";
   let closeFn: (() => Promise<void>) | undefined;
+  let fixtureServer: Server | undefined;
+  let fixtureUrl = "";
 
   beforeAll(async () => {
     setTestEnv();
@@ -37,11 +40,33 @@ describe("smoke", () => {
     const address = app.server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${address.port}`;
     closeFn = async () => app.close();
+
+    fixtureServer = createServer((_request, response) => {
+      response.statusCode = 200;
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end("<html><head><title>Smoke Fixture</title></head><body><main><p>hello</p></main></body></html>");
+    });
+
+    await new Promise<void>((resolve) => fixtureServer?.listen(0, "127.0.0.1", () => resolve()));
+    const fixtureAddress = fixtureServer.address() as AddressInfo;
+    fixtureUrl = `http://127.0.0.1:${fixtureAddress.port}`;
   });
 
   afterAll(async () => {
     if (closeFn) {
       await closeFn();
+    }
+
+    if (fixtureServer) {
+      await new Promise<void>((resolve, reject) => {
+        fixtureServer?.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
     }
   });
 
@@ -57,5 +82,86 @@ describe("smoke", () => {
     const payload = (await response.json()) as { service?: string; chainId?: number };
     expect(payload.service).toBe(process.env.SERVICE_NAME);
     expect(payload.chainId).toBe(8453);
+  });
+
+  it("returns 402 for /v1/extract without payment", async () => {
+    const response = await fetch(`${baseUrl}/v1/extract`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "smoke-extract-402",
+      },
+      body: JSON.stringify({ url: fixtureUrl }),
+    });
+
+    expect(response.status).toBe(402);
+  });
+
+  it("returns 200 for /v1/extract with dev bypass", async () => {
+    const response = await fetch(`${baseUrl}/v1/extract`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "smoke-extract-200",
+        "x-dev-bypass": "true",
+      },
+      body: JSON.stringify({ url: fixtureUrl }),
+    });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("returns 402 for /v1/sentiment without payment", async () => {
+    const response = await fetch(`${baseUrl}/v1/sentiment`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "smoke-sentiment-402",
+      },
+      body: JSON.stringify({ text: "This launch looks promising." }),
+    });
+
+    expect(response.status).toBe(402);
+  });
+
+  it("returns 200 for /v1/sentiment with dev bypass", async () => {
+    const response = await fetch(`${baseUrl}/v1/sentiment`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "smoke-sentiment-200",
+        "x-dev-bypass": "true",
+      },
+      body: JSON.stringify({ text: "This launch looks promising." }),
+    });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("returns 402 for /v1/dns without payment", async () => {
+    const response = await fetch(`${baseUrl}/v1/dns`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "smoke-dns-402",
+      },
+      body: JSON.stringify({ domain: "localhost", records: ["A"] }),
+    });
+
+    expect(response.status).toBe(402);
+  });
+
+  it("returns 200 for /v1/dns with dev bypass", async () => {
+    const response = await fetch(`${baseUrl}/v1/dns`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "smoke-dns-200",
+        "x-dev-bypass": "true",
+      },
+      body: JSON.stringify({ domain: "localhost", records: ["A"] }),
+    });
+
+    expect(response.status).toBe(200);
   });
 });

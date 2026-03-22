@@ -11,6 +11,8 @@ import { base } from "viem/chains";
 
 import { adaptExpressLikeRequest, adaptExpressLikeResponse } from "../lib/expressCompat.js";
 import type { AppConfig } from "../config.js";
+import { DNS_ROUTE_PRICE_BASE_UNITS } from "../lib/dnsLookup.js";
+import { SENTIMENT_ROUTE_PRICE_BASE_UNITS } from "../lib/sentiment.js";
 
 export interface X402Bundle {
   middleware: (req: IncomingMessage, res: ServerResponse, next: (err?: Error) => void) => Promise<void>;
@@ -68,6 +70,19 @@ export function createX402Middleware(config: AppConfig): X402Bundle {
   const resourceServer = new x402ResourceServer(facilitatorClient);
 
   const routes: RoutesConfig = {
+    "POST /v1/dns": {
+      accepts: {
+        scheme: "exact",
+        network,
+        payTo: config.receiverAddress,
+        price: {
+          asset: config.usdcContract,
+          amount: DNS_ROUTE_PRICE_BASE_UNITS,
+        },
+      },
+      description: "Paid DNS and TLS intelligence endpoint",
+      mimeType: "application/json",
+    },
     "POST /v1/echo": {
       accepts: {
         scheme: "exact",
@@ -79,6 +94,32 @@ export function createX402Middleware(config: AppConfig): X402Bundle {
         },
       },
       description: "Paid echo endpoint",
+      mimeType: "application/json",
+    },
+    "POST /v1/extract": {
+      accepts: {
+        scheme: "exact",
+        network,
+        payTo: config.receiverAddress,
+        price: {
+          asset: config.usdcContract,
+          amount: config.priceBaseUnits,
+        },
+      },
+      description: "Paid web content extraction endpoint",
+      mimeType: "application/json",
+    },
+    "POST /v1/sentiment": {
+      accepts: {
+        scheme: "exact",
+        network,
+        payTo: config.receiverAddress,
+        price: {
+          asset: config.usdcContract,
+          amount: SENTIMENT_ROUTE_PRICE_BASE_UNITS,
+        },
+      },
+      description: "Paid text sentiment analysis endpoint",
       mimeType: "application/json",
     },
   };
